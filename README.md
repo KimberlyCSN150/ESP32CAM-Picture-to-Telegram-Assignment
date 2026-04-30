@@ -16,12 +16,599 @@ Purpose: Create a Telegram bot to interact with the ESP32-CAM to request a new p
 
 Equipment Used: ESP32CAM, USB Micro Data Cable
 
-Tools used: Arduino
+Tools used: Arduino, Telegram
 
 Link(s) used: https://randomnerdtutorials.com/telegram-esp32-cam-photo-arduino/
 
 Steps I Followed:
+1. Go to Google Play or App Store, download and install Telegram.
+2. Open Telegram and follow the next steps to create a Telegram Bot. First, search for “botfather” and click the BotFather as shown below. Or open this link t.me/botfather in your smartphone.
+Problems / Solutions:
+3.The following window should open and you’ll be prompted to click the start button
+4.Type /newbot and follow the instructions to create your bot. Give it a name and username.
+5.If your bot is successfully created, you’ll receive a message with a link to access the bot and the bot token. Save the bot token because you’ll need it so that the ESP32 can interact with the bot.
 
-Problems / Solutions: 
+Get Your Telegram User ID
+6.Anyone that knows your bot username can interact with it. To make sure that we ignore messages that are not from our Telegram account (or any authorized users), you can get your Telegram User ID. Then, when your telegram bot receives a message, the ESP can check whether the sender ID corresponds to your User ID and handle the message or ignore it.
+
+In your Telegram account, search for “IDBot” or open this link t.me/myidbot in your smartphone.
+
+7.Start a conversation with that bot and type /getid. You will get a reply back with your user ID. Save that user ID, because you’ll need it later in this tutorial.
+
+Preparing Arduino IDE
+1.We’ll program the ESP32 board using Arduino IDE, so make sure you have them installed in your Arduino IDE.
+
+Installing the ESP32 Board in Arduino IDE (Windows, Mac OS X, Linux)
+
+Universal Telegram Bot Library
+1. To interact with the Telegram bot, we’ll use the Universal Telegram Bot Library created by Brian Lough which provides an easy interface for the Telegram Bot API.
+
+Follow the next steps to install the latest release of the library.
+
+Click here to download the Universal Arduino Telegram Bot library.
+Go to Sketch > Include Library > Add.ZIP Library...
+Add the library you’ve just downloaded.
+Important: don’t install the library through the Arduino Library Manager because it might install a deprecated version.
+
+For all the details about the library, take a look at the Universal Arduino Telegram Bot Library GitHub page.
+
+ArduinoJson Library
+You also have to install the ArduinoJson library. Follow the next steps to install the library.
+
+Code
+1. Copy the following code the Arduino IDE. To make this sketch work for you, you need to insert your network credentials (SSID and password), the Telegram Bot token and your Telegram user ID. Additionally, check the pin assignment for the camera board that you’re using.
+   /*
+  Rui Santos
+  Complete project details at https://RandomNerdTutorials.com/telegram-esp32-cam-photo-arduino/
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
+  
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*/
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include "esp_camera.h"
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+
+const char* ssid = "REPLACE_WITH_YOUR_SSID";
+const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+
+// Initialize Telegram BOT
+String BOTtoken = "XXXXXXXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";  // your Bot Token (Get from Botfather)
+
+// Use @myidbot to find out the chat ID of an individual or a group
+// Also note that you need to click "start" on a bot before it can
+// message you
+String CHAT_ID = "XXXXXXXXXX";
+
+bool sendPhoto = false;
+
+WiFiClientSecure clientTCP;
+UniversalTelegramBot bot(BOTtoken, clientTCP);
+
+#define FLASH_LED_PIN 4
+bool flashState = LOW;
+
+//Checks for new messages every 1 second.
+int botRequestDelay = 1000;
+unsigned long lastTimeBotRan;
+
+//CAMERA_MODEL_AI_THINKER
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+
+void configInitCamera(){
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;
+
+  //init with high specs to pre-allocate larger buffers
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  }
+  
+  // camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    delay(1000);
+    ESP.restart();
+  }
+}
+
+void handleNewMessages(int numNewMessages) {
+  Serial.print("Handle New Messages: ");
+  Serial.println(numNewMessages);
+
+  for (int i = 0; i < numNewMessages; i++) {
+    String chat_id = String(bot.messages[i].chat_id);
+    if (chat_id != CHAT_ID){
+      bot.sendMessage(chat_id, "Unauthorized user", "");
+      continue;
+    }
+    
+    // Print the received message
+    String text = bot.messages[i].text;
+    Serial.println(text);
+    
+    String from_name = bot.messages[i].from_name;
+    if (text == "/start") {
+      String welcome = "Welcome , " + from_name + "\n";
+      welcome += "Use the following commands to interact with the ESP32-CAM \n";
+      welcome += "/photo : takes a new photo\n";
+      welcome += "/flash : toggles flash LED \n";
+      bot.sendMessage(CHAT_ID, welcome, "");
+    }
+    if (text == "/flash") {
+      flashState = !flashState;
+      digitalWrite(FLASH_LED_PIN, flashState);
+      Serial.println("Change flash LED state");
+    }
+    if (text == "/photo") {
+      sendPhoto = true;
+      Serial.println("New photo request");
+    }
+  }
+}
+
+String sendPhotoTelegram() {
+  const char* myDomain = "api.telegram.org";
+  String getAll = "";
+  String getBody = "";
+
+  //Dispose first picture because of bad quality
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  esp_camera_fb_return(fb); // dispose the buffered image
+  
+  // Take a new photo
+  fb = NULL;  
+  fb = esp_camera_fb_get();  
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+    return "Camera capture failed";
+  }  
+  
+  Serial.println("Connect to " + String(myDomain));
+
+
+  if (clientTCP.connect(myDomain, 443)) {
+    Serial.println("Connection successful");
+    
+    String head = "--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"chat_id\"; \r\n\r\n" + CHAT_ID + "\r\n--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String tail = "\r\n--RandomNerdTutorials--\r\n";
+
+    size_t imageLen = fb->len;
+    size_t extraLen = head.length() + tail.length();
+    size_t totalLen = imageLen + extraLen;
+  
+    clientTCP.println("POST /bot"+BOTtoken+"/sendPhoto HTTP/1.1");
+    clientTCP.println("Host: " + String(myDomain));
+    clientTCP.println("Content-Length: " + String(totalLen));
+    clientTCP.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+    clientTCP.println();
+    clientTCP.print(head);
+  
+    uint8_t *fbBuf = fb->buf;
+    size_t fbLen = fb->len;
+    for (size_t n=0;n<fbLen;n=n+1024) {
+      if (n+1024<fbLen) {
+        clientTCP.write(fbBuf, 1024);
+        fbBuf += 1024;
+      }
+      else if (fbLen%1024>0) {
+        size_t remainder = fbLen%1024;
+        clientTCP.write(fbBuf, remainder);
+      }
+    }  
+    
+    clientTCP.print(tail);
+    
+    esp_camera_fb_return(fb);
+    
+    int waitTime = 10000;   // timeout 10 seconds
+    long startTimer = millis();
+    boolean state = false;
+    
+    while ((startTimer + waitTime) > millis()){
+      Serial.print(".");
+      delay(100);      
+      while (clientTCP.available()) {
+        char c = clientTCP.read();
+        if (state==true) getBody += String(c);        
+        if (c == '\n') {
+          if (getAll.length()==0) state=true; 
+          getAll = "";
+        } 
+        else if (c != '\r')
+          getAll += String(c);
+        startTimer = millis();
+      }
+      if (getBody.length()>0) break;
+    }
+    clientTCP.stop();
+    Serial.println(getBody);
+  }
+  else {
+    getBody="Connected to api.telegram.org failed.";
+    Serial.println("Connected to api.telegram.org failed.");
+  }
+  return getBody;
+}
+
+void setup(){
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); 
+  // Init Serial Monitor
+  Serial.begin(115200);
+
+  // Set LED Flash as output
+  pinMode(FLASH_LED_PIN, OUTPUT);
+  digitalWrite(FLASH_LED_PIN, flashState);
+
+  // Config and init the camera
+  configInitCamera();
+
+  // Connect to Wi-Fi
+  WiFi.mode(WIFI_STA);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  clientTCP.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("ESP32-CAM IP Address: ");
+  Serial.println(WiFi.localIP()); 
+}
+
+void loop() {
+  if (sendPhoto) {
+    Serial.println("Preparing photo");
+    sendPhotoTelegram(); 
+    sendPhoto = false; 
+  }
+  if (millis() > lastTimeBotRan + botRequestDelay)  {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    while (numNewMessages) {
+      Serial.println("got response");
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+    lastTimeBotRan = millis();
+  }
+}
+
+How the Code Works
+This section explains how the code works. Continue reading to learn how the code works or skip to the Demonstration section.
+
+Importing Libraries
+Start by importing the required libraries.
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include "esp_camera.h"
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+
+Network Credentials
+Insert your network credentials in the following variables.
+
+const char* ssid = "REPLACE_WITH_YOUR_SSID";
+const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+Telegram User ID
+Insert your chat ID. The one you’ve got from the IDBot.
+
+String CHAT_ID = "XXXXXXXXXX";
+Telegram Bot Token
+Insert your Telegram Bot token you’ve got from Botfather on the BOTtoken variable.
+
+String BOTtoken = "XXXXXXXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+The sendPhoto boolean variable indicates whether it is time to send a new photo to your telegram account. By default, it is set to false.
+
+bool sendPhoto = false;
+
+Create a new WiFi client with WiFiClientSecure.
+
+WiFiClientSecure clientTCP;
+Create a bot with the token and client defined earlier.
+
+UniversalTelegramBot bot(BOTtoken, clientTCP);
+Create a variable to hold the flash LED pin (FLASH_LED_PIN). In the ESP32-CAM AI Thinker, the flash is connected to GPIO 4. By default, set it to LOW.
+
+define FLASH_LED_PIN 4
+bool flashState = LOW;
+The botRequestDelay and lasTimeBotRan variables are used to check for new Telegram messages every x number of seconds. In this case, the code will check for new messages every second (1000 milliseconds). You can change that delay time in the botRequestDelay variable.
+
+int botRequestDelay = 1000;
+unsigned long lastTimeBotRan;
+ESP32-CAM Initialization
+The following lines assign the ESP32-CAM AI-Thinker pins. If you’re using a different ESP32 camera model, don’t forget to change the pinout (read ESP32-CAM Camera Boards: Pin and GPIOs Assignment Guide).
+
+//CAMERA_MODEL_AI_THINKER
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+
+The configInitCamera() function initializes the ESP32 camera.
+
+void configInitCamera(){
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;
+
+  //init with high specs to pre-allocate larger buffers
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  }
+  
+  // camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    delay(1000);
+    ESP.restart();
+  }
+}
+handleNewMessages()
+
+The handleNewMessages() function handles what happens when new messages arrive.
+
+void handleNewMessages(int numNewMessages) {
+  Serial.print("Handle New Messages: ");
+  Serial.println(numNewMessages);
+It checks the available messages:
+
+for (int i = 0; i < numNewMessages; i++) {
+Get the chat ID for a particular message and store it in the chat_id variable. The chat ID identifies who sent the message.
+
+String chat_id = String(bot.messages[i].chat_id);
+If the chat_id is different from your chat ID (CHAT_ID), it means that someone (that is not you) has sent a message to your bot. If that’s the case, ignore the message and wait for the next message.
+
+if (chat_id != CHAT_ID){
+  bot.sendMessage(chat_id, "Unauthorized user", "");
+  continue;
+}
+Otherwise, it means that the message was sent from a valid user, so we’ll save it in the text variable and check its content.
+
+String text = bot.messages[i].text;
+Serial.println(text);
+The from_name variable saves the name of the sender.
+
+String from_name = bot.messages[i].from_name;
+If it receives the /start message, we’ll send the valid commands to control the ESP. This is useful if you happen to forget what are the commands to control your board.
+
+if (text == "/start") {
+  String welcome = "Welcome , " + from_name + "\n";
+  welcome += "Use the following commands to interact with the ESP32-CAM \n";
+  welcome += "/photo : takes a new photo\n";
+  welcome += "/flash : toggles flash LED \n";
+  bot.sendMessage(CHAT_ID, welcome, "");
+}
+Sending a message to the bot is very simple. You just need to use the sendMessage() method on the bot object and pass as arguments the recipient’s chat ID, the message, and the parse mode.
+
+bool sendMessage(String chat_id, String text, String parse_mode = "");
+In our example, we’ll send the message to the ID stored on the CHAT_ID variable (that corresponds to your personal chat id) and send the message saved on the welcome variable.
+
+bot.sendMessage(CHAT_ID, welcome, "");
+If it receives the /flash message, invert the flashState variable and update the flash led state. If it was previously LOW, set it to HIGH. If it was previously HIGH, set it to LOW.
+
+if (text == "/flash") {
+  flashState = !flashState;
+  digitalWrite(FLASH_LED_PIN, flashState);
+  Serial.println("Change flash LED state");
+}
+
+Finally, if it receives the /photo message, set the sendPhoto variable to true. Then, in the loop(), check the value of the sendPhoto variable and proceed accordingly.
+
+if (text == "/photo") {
+  sendPhoto = true;
+  Serial.println("New photo request");
+}
+sendPhotoTelegram()
+The sendPhotoTelegram() function takes a photo with the ESP32-CAM.
+
+Note: many times, the first picture taken with the ESP32-CAM is not good because the sensor has not adjusted the white balance yet. So, to make sure we get a good picture, we discard the first one.
+
+//Dispose first picture because of bad quality
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  esp_camera_fb_return(fb); // dispose the buffered image
+  
+  // Take a new photo
+  fb = NULL;  
+  fb = esp_camera_fb_get();  
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+    return "Camera capture failed";
+  }  
+Then, it makes an HTTP POST request to send the photo to your telegram bot.
+
+clientTCP.println("POST /bot"+BOTtoken+"/sendPhoto HTTP/1.1");
+clientTCP.println("Host: " + String(myDomain));
+clientTCP.println("Content-Length: " + String(totalLen));
+clientTCP.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+clientTCP.println();
+clientTCP.print(head);
+setup()
+
+In the setup(), initialize the Serial Monitor.
+
+Serial.begin(115200);
+Set the flash LED as an output and set it to its initial state.
+
+pinMode(FLASH_LED_PIN, OUTPUT);
+digitalWrite(FLASH_LED_PIN, flashState);
+Call the configInitCamera() function to configure and initialize the camera.
+
+configInitCamera();
+Connect your ESP32-CAM to your local network.
+
+WiFi.mode(WIFI_STA);
+Serial.println();
+Serial.print("Connecting to ");
+Serial.println(ssid);
+WiFi.begin(ssid, password);
+while (WiFi.status() != WL_CONNECTED) {
+  Serial.print(".");
+  delay(500);
+}
+
+loop()
+In the loop(), check the state of the sendPhoto variable. If it is true, call the sendPhotoTelegram() function to take and send a photo to your telegram account.
+
+if (sendPhoto) {
+  Serial.println("Preparing photo");
+  sendPhotoTelegram();
+
+When it’s done, set the sendPhoto variable to false.
+
+sendPhoto = false;
+In the loop(), you also check for new messages every second.
+
+if (millis() > lastTimeBotRan + botRequestDelay)  {
+  int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  while (numNewMessages) {
+    Serial.println("got response");
+    handleNewMessages(numNewMessages);
+    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  }
+  lastTimeBotRan = millis();
+}
+When a new message arrives, call the handleNewMessages() function.
+
+while (numNewMessages) {
+  Serial.println("got response");
+  handleNewMessages(numNewMessages);
+  numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+}
+That’s pretty much how the code works.
+
+Demonstration
+Upload the code to your ESP32-CAM board. Don’t forget to go to Tools > Board and select the board you’re using. Go to Tools > Port and select the COM port your board is connected to.
+
+After uploading the code, press the ESP32-CAM on-board RST button so that it starts running the code. Then, you can open the Serial Monitor to check what’s happening in the background.
+
+
+Go to your Telegram account and open a conversation with your bot. Send the following commands and see the bot responding:
+
+/start shows the welcome message with the valid commands;
+/flash inverts the state of the LED flash;
+/photo takes a new photo and sends it to your Telegram account.
+
+At the same time, on the Serial Monitor, you should see that the ESP32-CAM is receiving the messages.
+
+If you try to interact with your bot from another account, you’ll get the “Unauthorized user” message.
 
 Final Report:
+
+Wrapping Up
+In this tutorial, you’ve learned how to send a photo from the ESP32-CAM to your Telegram account. As long as you have access to the internet on your smartphone, you can request a new photo no matter where you are. This is great to monitor your ESP32-CAM from anywhere in the world.
+
+We have other tutorials using Telegram that you might be interested in:
+
+ESP32-CAM with Telegram: Take Photos, Control Outputs, Request Sensor Readings and Motion Notifications
+Telegram: ESP32 Motion Detection with Notifications
+Telegram: Control ESP32/ESP8266 Outputs
+Telegram: Request ESP32/ESP8266 Sensor Readings
+Learn more about the ESP32-CAM with our resources:
+
+Build ESP32-CAM Projects using Arduino IDE eBook
+More ESP32-CAM Projects and Tutorials…
+Thanks for reading.
